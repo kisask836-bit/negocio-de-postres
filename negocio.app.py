@@ -57,17 +57,21 @@ def actualizar_tabla(nombre_pestana, df):
     else:
         worksheet.update([df.columns.values.tolist()])
 
-# Asegurar estructura con las nuevas columnas
-asegurar_columnas("insumos", ["nombre", "categoria", "unidad", "costo_unidad", "stock", "stock_minimo"])
-asegurar_columnas("recetas", ["id", "nombre", "categoria", "precio_venta"])
-asegurar_columnas("receta_ingredientes", ["receta_id", "insumo_nombre", "cantidad"])
-asegurar_columnas("tandas", ["id", "receta_nombre", "cantidad_producida", "stock_disponible", "costo_total", "fecha", "notas"])
-asegurar_columnas("finanzas", ["tipo", "monto", "fecha", "descripcion"])
+# ==========================================
+# PREVENCIÓN DE BLOQUEOS (LÍMITES DE API)
+# ==========================================
+# Asegurar estructura SOLO una vez por sesión para no saturar la API de Google
+if 'columnas_aseguradas' not in st.session_state:
+    asegurar_columnas("insumos", ["nombre", "categoria", "unidad", "costo_unidad", "stock", "stock_minimo"])
+    asegurar_columnas("recetas", ["id", "nombre", "categoria", "precio_venta"])
+    asegurar_columnas("receta_ingredientes", ["receta_id", "insumo_nombre", "cantidad"])
+    asegurar_columnas("tandas", ["id", "receta_nombre", "cantidad_producida", "stock_disponible", "costo_total", "fecha", "notas"])
+    asegurar_columnas("finanzas", ["tipo", "monto", "fecha", "descripcion"])
+    st.session_state.columnas_aseguradas = True
 
 # ==========================================
 # INTERFAZ DE USUARIO (STREAMLIT)
 # ==========================================
-# Cambio de nombre y emoji 💎
 st.set_page_config(page_title="Lady Pays", layout="wide", page_icon="💎")
 
 st.markdown("""
@@ -86,7 +90,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ENCABEZADO ACTUALIZADO
+# ENCABEZADO
 st.title("💎 Lady Pays")
 st.caption("Control de Insumos y Tandas")
 st.write("---")
@@ -170,7 +174,6 @@ with tabs[1]:
             st.session_state.ing_temp = []
             
         nombre_receta = st.text_input("Nombre del postre")
-        # Ajuste: Categoría libre
         categoria_receta = st.text_input("Categoría (ej. Pays, Pasteles, Galletas, Bebidas...)", placeholder="Escribe la categoría")
         precio_venta = st.number_input("Precio de venta al público ($)", min_value=0.0, format="%.2f")
         
@@ -249,7 +252,6 @@ with tabs[2]:
     st.markdown("### 📝 Registrar Tanda Producida")
     df_recetas = leer_tabla("recetas")
     
-    # Ajuste: Explicación si no hay recetas
     if not df_recetas.empty:
         receta_sel = st.selectbox("SELECCIONAR RECETA", ["-- Selecciona un postre --"] + df_recetas["nombre"].tolist())
         
