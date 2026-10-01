@@ -60,13 +60,13 @@ def actualizar_tabla(nombre_pestana, df):
 # ==========================================
 # PREVENCIÓN DE BLOQUEOS (LÍMITES DE API)
 # ==========================================
-# Asegurar estructura SOLO una vez por sesión para no saturar la API de Google
 if 'columnas_aseguradas' not in st.session_state:
     asegurar_columnas("insumos", ["nombre", "categoria", "unidad", "costo_unidad", "stock", "stock_minimo"])
     asegurar_columnas("recetas", ["id", "nombre", "categoria", "precio_venta"])
     asegurar_columnas("receta_ingredientes", ["receta_id", "insumo_nombre", "cantidad"])
     asegurar_columnas("tandas", ["id", "receta_nombre", "cantidad_producida", "stock_disponible", "costo_total", "fecha", "notas"])
     asegurar_columnas("finanzas", ["tipo", "monto", "fecha", "descripcion"])
+    asegurar_columnas("mermas", ["tipo", "nombre", "cantidad", "unidad", "costo_estimado", "fecha", "motivo"])
     st.session_state.columnas_aseguradas = True
 
 # ==========================================
@@ -95,7 +95,15 @@ st.title("💎 Lady Pays")
 st.caption("Control de Insumos y Tandas")
 st.write("---")
 
-tabs = st.tabs(["📦 Inventario de Insumos", "📖 Recetas", "🍳 Registrar Tanda", "🛒 Lista de Compras", "💰 Ventas/Finanzas", "⚙️ Respaldos y Ajustes"])
+tabs = st.tabs([
+    "📦 Inventario de Insumos", 
+    "📖 Recetas", 
+    "🍳 Registrar Tanda", 
+    "🛒 Lista de Compras", 
+    "💰 Ventas/Finanzas", 
+    "🗑️ Mermas", 
+    "⚙️ Respaldos y Ajustes"
+])
 
 # --- SECCION 1: INVENTARIO ---
 with tabs[0]:
@@ -366,8 +374,90 @@ with tabs[4]:
             st.metric("Balance General", f"${ingresos - egresos:.2f}")
             st.dataframe(df_finanzas, use_container_width=True, height=200)
 
-# --- SECCION 6: RESPALDOS Y AJUSTES ---
+# --- SECCION 6: MERMAS Y PÉRDIDAS ---
 with tabs[5]:
+    st.markdown("### 🗑️ Registro de Mermas y Pérdidas")
+    st.caption("Reporta ingredientes echados a perder o postres dañados para mantener tu inventario exacto.")
+    
+    tipo_merma = st.radio("¿Qué tipo de pérdida deseas registrar?", ["Insumo (Materia prima)", "Producto Terminado (Pays / Postres)"], horizontal=True)
+    
+    if tipo_merma == "Insumo (Materia prima)":
+        df_insumos = leer_tabla("insumos")
+        if not df_insumos.empty:
+            insumo_sel = st.selectbox("Selecciona el insumo dañado", df_insumos["nombre"].tolist())
+            insumo_row = df_insumos[df_insumos["nombre"] == insumo_sel].iloc[0]
+            stock_actual = float(insumo_row["stock"])
+            unidad = insumo_row["unidad"]
+            costo_u = float(insumo_row["costo_unidad"])
+            
+            cant_perdida = st.number_input(f"Cantidad perdida ({unidad})", min_value=0.0, max_value=stock_actual, step=0.1)
+            motivo = st.text_input("Motivo (ej. Caducado, envase roto, etc.)")
+            
+            if st.button("Registrar Pérdida de Insumo", type="primary"):
+                if cant_perdida > 0:
+                    idx = df_insumos[df_insumos["nombre"] == insumo_sel].index[0]
+                    df_insumos.loc[idx, "stock"] = stock_actual - cant_perdida
+                    actualizar_tabla("insumos", df_insumos)
+                    
+                    costo_total_perdida = cant_perdida * costo_u
+                    escribir_fila("mermas", ["Insumo", insumo_sel, cant_perdida, unidad, costo_total_perdida, datetime.now().strftime("%Y-%m-%d %H:%M"), motivo])
+                    
+                    st.success(f"Se registraron {cant_perdida} {unidad} de {insumo_sel} como merma.")
+                    st.rerun()
+                else:
+                    st.warning("La cantidad debe ser mayor a 0.")
+        else:
+            st.info("No hay insumos registrados para reportar.")
+            
+    else:
+        df_tandas = leer_tabla("tandas")
+        if not df_tandas.empty and "stock_disponible" in df_tandas.columns:
+            df_disp = df_tandas[pd.to_numeric(df_tandas["stock_disponible"]) > 0]
+            if not df_disp.empty:
+                opciones_tanda = []
+                for _, row in df_disp.iterrows():
+                    opciones_tanda.append(f"Lote #{row['id']} - {row['receta_nombre']} (Disponibles: {row['stock_disponible']})")
+                
+                tanda_elegida_str = st.selectbox("Selecciona el lote afectado", opciones_tanda)
+                tanda_id_sel = int(tanda_elegida_str.split(" - ")[0].replace("Lote #", ""))
+                
+                tanda_row = df_disp[df_disp["id"] == tanda_id_sel].iloc[0]
+                stock_disp_tanda = float(tanda_row["stock_disponible"])
+                costo_tanda_total = float(tanda_row["costo_total"])
+                cant_producida = float(tanda_row["cantidad_producida"])
+                costo_unitario_prod = costo_tanda_total / cant_producida if cant_producida > 0 else 0
+                
+                cant_perdida_prod = st.number_input("Cantidad de piezas dañadas", min_value=1, max_value=int(stock_disp_tanda), step=1)
+                motivo_prod = st.text_input("Motivo (ej. Se cayó al suelo, se quemó, etc.)")
+                
+                if st.button("Registrar Pérdida de Producto", type="primary"):
+                    if cant_perdida_prod > 0:
+                        idx_tanda = df_tandas[df_tandas["id"] == tanda_id_sel].index[0]
+                        df_tandas.loc[idx_tanda, "stock_disponible"] = stock_disp_tanda - cant_perdida_prod
+                        actualizar_tabla("tandas", df_tandas)
+                        
+                        costo_perdida_prod = cant_perdida_prod * costo_unitario_prod
+                        escribir_fila("mermas", ["Producto Terminado", tanda_row["receta_nombre"], cant_perdida_prod, "piezas", costo_perdida_prod, datetime.now().strftime("%Y-%m-%d %H:%M"), motivo_prod])
+                        
+                        st.success(f"Se registraron {cant_perdida_prod} piezas de {tanda_row['receta_nombre']} como merma.")
+                        st.rerun()
+            else:
+                st.info("No hay lotes disponibles para reportar mermas.")
+        else:
+            st.info("No hay tandas registradas.")
+            
+    st.markdown("---")
+    st.subheader("📜 Historial de Mermas Registradas")
+    df_mermas = leer_tabla("mermas")
+    if not df_mermas.empty:
+        st.dataframe(df_mermas, use_container_width=True)
+        total_mermas_costo = df_mermas['costo_estimado'].astype(float).sum()
+        st.metric("Costo Total de Pérdidas", f"${total_mermas_costo:.2f}")
+    else:
+        st.info("Aún no hay mermas registradas.")
+
+# --- SECCION 7: RESPALDOS Y AJUSTES ---
+with tabs[6]:
     st.markdown("### ⚙️ Copia de Seguridad y Datos")
     st.write("Guarda o restaura toda tu información fácilmente.")
     
@@ -397,6 +487,7 @@ with tabs[5]:
             actualizar_tabla("receta_ingredientes", pd.DataFrame(columns=["receta_id", "insumo_nombre", "cantidad"]))
             actualizar_tabla("tandas", pd.DataFrame(columns=["id", "receta_nombre", "cantidad_producida", "stock_disponible", "costo_total", "fecha", "notas"]))
             actualizar_tabla("finanzas", pd.DataFrame(columns=["tipo", "monto", "fecha", "descripcion"]))
+            actualizar_tabla("mermas", pd.DataFrame(columns=["tipo", "nombre", "cantidad", "unidad", "costo_estimado", "fecha", "motivo"]))
             st.success("Sistema restablecido de fábrica.")
             st.rerun()
         st.markdown("</div>", unsafe_allow_html=True)
