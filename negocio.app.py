@@ -28,7 +28,6 @@ def leer_tabla(nombre_pestana):
         return pd.DataFrame()
 
 def asegurar_columnas(nombre_pestana, columnas_esperadas):
-    """Verifica que la hoja exista y tenga las columnas necesarias. Si no, las añade sin borrar datos."""
     try:
         ws = sh.worksheet(nombre_pestana)
     except gspread.exceptions.WorksheetNotFound:
@@ -42,7 +41,7 @@ def asegurar_columnas(nombre_pestana, columnas_esperadas):
         if faltantes:
             df = leer_tabla(nombre_pestana)
             for col in faltantes:
-                df[col] = "Sin Categoría" # Valor por defecto para no afectar filas viejas
+                df[col] = "Sin Categoría" 
             actualizar_tabla(nombre_pestana, df)
     else:
         ws.append_row(columnas_esperadas)
@@ -58,7 +57,7 @@ def actualizar_tabla(nombre_pestana, df):
     else:
         worksheet.update([df.columns.values.tolist()])
 
-# Asegurar estructura con las nuevas columnas (categoria)
+# Asegurar estructura con las nuevas columnas
 asegurar_columnas("insumos", ["nombre", "categoria", "unidad", "costo_unidad", "stock", "stock_minimo"])
 asegurar_columnas("recetas", ["id", "nombre", "categoria", "precio_venta"])
 asegurar_columnas("receta_ingredientes", ["receta_id", "insumo_nombre", "cantidad"])
@@ -68,9 +67,9 @@ asegurar_columnas("finanzas", ["tipo", "monto", "fecha", "descripcion"])
 # ==========================================
 # INTERFAZ DE USUARIO (STREAMLIT)
 # ==========================================
-st.set_page_config(page_title="Repostería Mágica", layout="wide", page_icon="🍰")
+# Cambio de nombre y emoji 💎
+st.set_page_config(page_title="Lady Pays", layout="wide", page_icon="💎")
 
-# Estilos CSS para simular las tarjetas y etiquetas del video
 st.markdown("""
 <style>
 .card {
@@ -87,15 +86,14 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# ENCABEZADO
-st.title("🍰 Repostería Mágica")
+# ENCABEZADO ACTUALIZADO
+st.title("💎 Lady Pays")
 st.caption("Control de Insumos y Tandas")
 st.write("---")
 
-# NAVEGACIÓN ESTILO APP (Pestañas Superiores)
 tabs = st.tabs(["📦 Inventario de Insumos", "📖 Recetas", "🍳 Registrar Tanda", "🛒 Lista de Compras", "💰 Ventas/Finanzas", "⚙️ Respaldos y Ajustes"])
 
-# --- SECCION 1: INVENTARIO (Estilo Visual) ---
+# --- SECCION 1: INVENTARIO ---
 with tabs[0]:
     busqueda = st.text_input("🔍 Buscar ingrediente...", placeholder="Ej. Leche Condensada")
     
@@ -134,7 +132,6 @@ with tabs[0]:
         if busqueda:
             df_insumos = df_insumos[df_insumos['nombre'].str.contains(busqueda, case=False)]
         
-        # Grid de 2 columnas para las tarjetas
         col_t1, col_t2 = st.columns(2)
         for i, row in df_insumos.iterrows():
             stock = float(row.get('stock', 0))
@@ -161,9 +158,9 @@ with tabs[0]:
             else:
                 col_t2.markdown(tarjeta_html, unsafe_allow_html=True)
     else:
-        st.info("No hay insumos.")
+        st.info("No hay insumos. Empieza agregando uno en 'Nuevo Insumo'.")
 
-# --- SECCION 2: RECETAS (Con cálculo de costos) ---
+# --- SECCION 2: RECETAS ---
 with tabs[1]:
     with st.expander("➕ Nueva Receta"):
         df_insumos = leer_tabla("insumos")
@@ -173,7 +170,8 @@ with tabs[1]:
             st.session_state.ing_temp = []
             
         nombre_receta = st.text_input("Nombre del postre")
-        categoria_receta = st.selectbox("Categoría", ["Carlotas", "Pays", "Pasteles", "Galletas", "Bebidas"])
+        # Ajuste: Categoría libre
+        categoria_receta = st.text_input("Categoría (ej. Pays, Pasteles, Galletas, Bebidas...)", placeholder="Escribe la categoría")
         precio_venta = st.number_input("Precio de venta al público ($)", min_value=0.0, format="%.2f")
         
         col_i1, col_i2 = st.columns(2)
@@ -191,14 +189,17 @@ with tabs[1]:
         if st.session_state.ing_temp:
             st.table(pd.DataFrame(st.session_state.ing_temp))
             if st.button("Guardar Receta Completa", type="primary"):
-                if nombre_receta:
+                if nombre_receta and categoria_receta:
                     df_recetas = leer_tabla("recetas")
                     nuevo_id = 1 if df_recetas.empty else len(df_recetas) + 1
-                    escribir_fila("recetas", [nuevo_id, nombre_receta, categoria_receta, precio_venta])
+                    escribir_fila("recetas", [nuevo_id, nombre_receta, categoria_receta.upper(), precio_venta])
                     for ing in st.session_state.ing_temp:
                         escribir_fila("receta_ingredientes", [nuevo_id, ing['nombre'], ing['cantidad']])
                     st.session_state.ing_temp = []
+                    st.success("¡Receta guardada con éxito!")
                     st.rerun()
+                else:
+                    st.error("Por favor, ponle un nombre y una categoría a tu receta antes de guardar.")
 
     df_recetas = leer_tabla("recetas")
     df_ri = leer_tabla("receta_ingredientes")
@@ -243,11 +244,12 @@ with tabs[1]:
             else:
                 col_r2.markdown(tarjeta_receta, unsafe_allow_html=True)
 
-# --- SECCION 3: PRODUCCION (Modal Interactivo del Video) ---
+# --- SECCION 3: PRODUCCION ---
 with tabs[2]:
     st.markdown("### 📝 Registrar Tanda Producida")
     df_recetas = leer_tabla("recetas")
     
+    # Ajuste: Explicación si no hay recetas
     if not df_recetas.empty:
         receta_sel = st.selectbox("SELECCIONAR RECETA", ["-- Selecciona un postre --"] + df_recetas["nombre"].tolist())
         
@@ -298,8 +300,10 @@ with tabs[2]:
                     escribir_fila("tandas", [tanda_id, receta_sel, cantidad_preparar, cantidad_preparar, costo_total, datetime.now().strftime("%Y-%m-%d %H:%M"), ""])
                     st.success("Tanda registrada y descontada del inventario.")
                     st.rerun()
+    else:
+        st.info("⚠️ Aún no tienes recetas registradas. Ve a la pestaña '📖 Recetas', crea y guarda tu primer postre. Después, regresa aquí para registrar cuántos preparaste.")
 
-# --- SECCION 4: LISTA DE COMPRAS (Nueva Pestaña) ---
+# --- SECCION 4: LISTA DE COMPRAS ---
 with tabs[3]:
     st.markdown("### 📋 Lista Automática de Compras")
     st.caption("Insumos que han alcanzado o bajado de su nivel mínimo de seguridad.")
@@ -313,7 +317,7 @@ with tabs[3]:
         if faltantes.empty:
             st.success("✔️ ¡Todo en orden! Tienes suficiente inventario de todos tus insumos para seguir horneando.")
         else:
-            lista_txt = "LISTA DE COMPRAS - REPOSTERÍA\n" + "-"*30 + "\n"
+            lista_txt = "LISTA DE COMPRAS - LADY PAYS\n" + "-"*30 + "\n"
             for _, row in faltantes.iterrows():
                 comprar = row['stock_minimo'] - row['stock'] if row['stock'] < row['stock_minimo'] else row['stock_minimo']
                 st.warning(f"🛒 **{row['nombre']}**: Te quedan {row['stock']} {row['unidad']}. (Sugerido comprar mínimo: {comprar} {row['unidad']})")
@@ -321,7 +325,7 @@ with tabs[3]:
             
             st.download_button("📥 Descargar Lista (.txt)", data=lista_txt, file_name="lista_compras.txt")
 
-# --- SECCION 5: VENTAS Y FINANZAS (Conservadas de tu código original) ---
+# --- SECCION 5: VENTAS Y FINANZAS ---
 with tabs[4]:
     col_v, col_f = st.columns(2)
     with col_v:
@@ -360,7 +364,7 @@ with tabs[4]:
             st.metric("Balance General", f"${ingresos - egresos:.2f}")
             st.dataframe(df_finanzas, use_container_width=True, height=200)
 
-# --- SECCION 6: RESPALDOS Y AJUSTES (Nueva Pestaña) ---
+# --- SECCION 6: RESPALDOS Y AJUSTES ---
 with tabs[5]:
     st.markdown("### ⚙️ Copia de Seguridad y Datos")
     st.write("Guarda o restaura toda tu información fácilmente.")
@@ -377,7 +381,7 @@ with tabs[5]:
                     "recetas": leer_tabla("recetas").to_dict(orient="records"),
                     "receta_ingredientes": leer_tabla("receta_ingredientes").to_dict(orient="records")
                 }
-                st.download_button("⬇️ Descargar Archivo", data=json.dumps(datos, indent=4), file_name="respaldo_magico.json", mime="application/json")
+                st.download_button("⬇️ Descargar Archivo", data=json.dumps(datos, indent=4), file_name="respaldo_ladypays.json", mime="application/json")
         st.markdown("</div>", unsafe_allow_html=True)
                 
     with col_b2:
