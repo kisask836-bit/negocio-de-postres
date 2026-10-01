@@ -19,32 +19,55 @@ def get_sheets_connection():
 
 sh = get_sheets_connection()
 
-# --- FUNCIONES ROBUSTAS PARA PROTEGER LA NUBE ---
+# --- INICIALIZACIÓN OPTIMIZADA (EVITA BLOQUEOS DE API) ---
+@st.cache_resource
+def inicializar_base_datos():
+    tablas_requeridas = {
+        "insumos": ["nombre", "categoria", "unidad", "costo_unidad", "stock", "stock_minimo"],
+        "recetas": ["id", "nombre", "categoria", "precio_venta"],
+        "receta_ingredientes": ["receta_id", "insumo_nombre", "cantidad"],
+        "tandas": ["id", "receta_nombre", "cantidad_producida", "stock_disponible", "costo_total", "fecha", "notas"],
+        "finanzas": ["tipo", "monto", "fecha", "descripcion"],
+        "mermas": ["tipo", "nombre", "cantidad", "unidad", "costo_estimado", "fecha", "motivo"]
+    }
+    
+    try:
+        existing_worksheets = {ws.title: ws for ws in sh.worksheets()}
+    except Exception:
+        return False
+
+    for nombre_pestana, columnas_esperadas in tablas_requeridas.items():
+        if nombre_pestana not in existing_worksheets:
+            ws = sh.add_worksheet(title=nombre_pestana, rows="100", cols="20")
+            ws.append_row(columnas_esperadas)
+        else:
+            ws = existing_worksheets[nombre_pestana]
+            header = ws.row_values(1) if ws.row_count > 0 else []
+            if not header:
+                ws.append_row(columnas_esperadas)
+            else:
+                faltantes = [col for col in columnas_esperadas if col not in header]
+                if faltantes:
+                    data = ws.get_all_records()
+                    df = pd.DataFrame(data) if data else pd.DataFrame(columns=header)
+                    for col in faltantes:
+                        df[col] = "Sin Categoría"
+                    ws.clear()
+                    if not df.empty:
+                        ws.update([df.columns.values.tolist()] + df.values.tolist())
+                    else:
+                        ws.update([df.columns.values.tolist()])
+    return True
+
+inicializar_base_datos()
+
+# --- FUNCIONES DE LECTURA Y ESCRITURA ---
 def leer_tabla(nombre_pestana):
     try:
         data = sh.worksheet(nombre_pestana).get_all_records()
         return pd.DataFrame(data)
     except Exception:
         return pd.DataFrame()
-
-def asegurar_columnas(nombre_pestana, columnas_esperadas):
-    try:
-        ws = sh.worksheet(nombre_pestana)
-    except gspread.exceptions.WorksheetNotFound:
-        ws = sh.add_worksheet(title=nombre_pestana, rows="100", cols="20")
-        ws.append_row(columnas_esperadas)
-        return
-
-    if ws.row_count > 0:
-        header = ws.row_values(1)
-        faltantes = [col for col in columnas_esperadas if col not in header]
-        if faltantes:
-            df = leer_tabla(nombre_pestana)
-            for col in faltantes:
-                df[col] = "Sin Categoría" 
-            actualizar_tabla(nombre_pestana, df)
-    else:
-        ws.append_row(columnas_esperadas)
 
 def escribir_fila(nombre_pestana, fila):
     sh.worksheet(nombre_pestana).append_row(fila)
@@ -56,18 +79,6 @@ def actualizar_tabla(nombre_pestana, df):
         worksheet.update([df.columns.values.tolist()] + df.values.tolist())
     else:
         worksheet.update([df.columns.values.tolist()])
-
-# ==========================================
-# PREVENCIÓN DE BLOQUEOS (LÍMITES DE API)
-# ==========================================
-if 'columnas_aseguradas' not in st.session_state:
-    asegurar_columnas("insumos", ["nombre", "categoria", "unidad", "costo_unidad", "stock", "stock_minimo"])
-    asegurar_columnas("recetas", ["id", "nombre", "categoria", "precio_venta"])
-    asegurar_columnas("receta_ingredientes", ["receta_id", "insumo_nombre", "cantidad"])
-    asegurar_columnas("tandas", ["id", "receta_nombre", "cantidad_producida", "stock_disponible", "costo_total", "fecha", "notas"])
-    asegurar_columnas("finanzas", ["tipo", "monto", "fecha", "descripcion"])
-    asegurar_columnas("mermas", ["tipo", "nombre", "cantidad", "unidad", "costo_estimado", "fecha", "motivo"])
-    st.session_state.columnas_aseguradas = True
 
 # ==========================================
 # INTERFAZ DE USUARIO (STREAMLIT)
