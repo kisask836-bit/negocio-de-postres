@@ -186,7 +186,9 @@ def _normalizar(df, nombre):
         if tipo == "t":
             df[c] = df[c].fillna("").astype(str).str.strip()
         elif tipo == "n":
-            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+            # Siempre float: si todos los valores son enteros pandas usa int64 y
+            # rechaza decimales como 17.1 al descontar stock o editar montos.
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0).astype(float)
         else:
             df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0).astype(int)
     return df.reset_index(drop=True)
