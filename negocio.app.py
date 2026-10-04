@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 💎 Lady Pays – Control de Insumos, Recetas, Producción y Finanzas
-Versión Optimizada para Móvil y Uso Individual.
+Versión Optimizada para Móvil y Uso Individual (Con automatización de gastos).
 """
 import json
 from datetime import datetime, timedelta, timezone
@@ -227,6 +227,7 @@ with st.sidebar:
         "🏠 Panel Principal",
         "📦 Inventario de Insumos",
         "📖 Recetas",
+        "💰 Finanzas", # NUEVA SECCIÓN
         "🛒 Lista de Compras",
         "🗑️ Mermas",
         "⚙️ Ajustes y Respaldos"
@@ -241,13 +242,15 @@ if menu == "🏠 Panel Principal":
     _ins_r, _tan_r, _fin_r = cargar_tabla("insumos"), cargar_tabla("tandas"), cargar_tabla("finanzas")
     _df_recetas = cargar_tabla("recetas")
     _mes, _hoy = ahora().strftime("%Y-%m"), ahora().strftime("%Y-%m-%d")
-    _ing_mes = _fin_r[(_fin_r["tipo"] == "Ingreso") & (_fin_r["fecha"].str.startswith(_mes))]["monto"].sum()
-    _ventas_hoy = _fin_r[(_fin_r["tipo"] == "Ingreso") & (_fin_r["fecha"].str.startswith(_hoy))]["monto"].sum()
+    
+    # Cálculos para el panel principal
+    _ingresos_hoy = _fin_r[(_fin_r["tipo"] == "Ingreso") & (_fin_r["fecha"].str.startswith(_hoy))]["monto"].sum()
+    _ingresos_mes = _fin_r[(_fin_r["tipo"] == "Ingreso") & (_fin_r["fecha"].str.startswith(_mes))]["monto"].sum()
     _crit_r = int((_ins_r["stock"] <= _ins_r["stock_minimo"]).sum()) if not _ins_r.empty else 0
 
     col1, col2 = st.columns(2)
-    col1.metric("Ventas de hoy", dinero(_ventas_hoy))
-    col2.metric("Balance mensual", dinero(_ing_mes))
+    col1.metric("Ventas de hoy", dinero(_ingresos_hoy))
+    col2.metric("Ingresos del mes", dinero(_ingresos_mes))
     col3, col4 = st.columns(2)
     col3.metric("Pays listos", f"{_tan_r['stock_disponible'].sum():g}")
     col4.metric("Insumos críticos", _crit_r)
@@ -324,7 +327,7 @@ if menu == "🏠 Panel Principal":
         st.info("No hay recetas registradas.")
 
 # ==========================================
-# 1. INVENTARIO DE INSUMOS
+# 1. INVENTARIO DE INSUMOS (CON GASTOS AUTOMÁTICOS)
 # ==========================================
 elif menu == "📦 Inventario de Insumos":
     df_insumos = cargar_tabla("insumos")
@@ -339,6 +342,7 @@ elif menu == "📦 Inventario de Insumos":
 
     with st.expander("➕ Agregar Insumo Nuevo o Reabastecer"):
         modo = st.radio("Acción", ["Reabastecer existente", "Insumo Nuevo"], horizontal=True)
+        
         if modo == "Insumo Nuevo":
             with st.form("form_nuevo_insumo", clear_on_submit=True):
                 nombre = st.text_input("Nombre")
@@ -348,10 +352,19 @@ elif menu == "📦 Inventario de Insumos":
                 costo = col1.number_input("Costo Unitario ($)", min_value=0.0)
                 cantidad = col2.number_input("Cantidad inicial", min_value=0.0)
                 stock_min = st.number_input("Stock mínimo", min_value=0.0)
+                
                 if st.form_submit_button("Guardar Insumo"):
                     if nombre.strip():
                         escribir_fila("insumos", [nombre.strip(), categoria, unidad, costo, cantidad, stock_min])
-                        aviso("✅ Insumo guardado.")
+                        
+                        # AUTOMATIZACIÓN DE GASTO: Si hubo cantidad inicial, se registra como egreso.
+                        if cantidad > 0 and costo > 0:
+                            df_fin = cargar_tabla("finanzas")
+                            id_fin = obtener_nuevo_id(df_fin)
+                            gasto_total = cantidad * costo
+                            escribir_fila("finanzas", [id_fin, "Egreso", gasto_total, ahora_str(), f"Compra inicial de: {nombre.strip()} ({cantidad} {unidad})"])
+                        
+                        aviso("✅ Insumo guardado e inventario actualizado.")
                         st.rerun()
         else:
             if not df_insumos.empty:
@@ -360,9 +373,20 @@ elif menu == "📦 Inventario de Insumos":
                     cant_re = st.number_input("Cantidad comprada", min_value=0.0)
                     if st.form_submit_button("Sumar al inventario"):
                         idx = df_insumos[df_insumos["nombre"] == ins_re].index[0]
+                        costo_u = float(df_insumos.loc[idx, "costo_unidad"])
+                        unidad_ins = df_insumos.loc[idx, "unidad"]
+                        
                         df_insumos.loc[idx, "stock"] = float(df_insumos.loc[idx, "stock"]) + cant_re
                         actualizar_tabla("insumos", df_insumos)
-                        aviso("✅ Inventario actualizado.")
+                        
+                        # AUTOMATIZACIÓN DE GASTO: Registra el costo de la compra de inmediato.
+                        if cant_re > 0 and costo_u > 0:
+                            df_fin = cargar_tabla("finanzas")
+                            id_fin = obtener_nuevo_id(df_fin)
+                            gasto_total = cant_re * costo_u
+                            escribir_fila("finanzas", [id_fin, "Egreso", gasto_total, ahora_str(), f"Reabastecimiento de: {ins_re} ({cant_re} {unidad_ins})"])
+                        
+                        aviso("✅ Inventario y finanzas actualizados.")
                         st.rerun()
 
 # ==========================================
@@ -406,7 +430,39 @@ elif menu == "📖 Recetas":
                     st.rerun()
 
 # ==========================================
-# 3. LISTA DE COMPRAS
+# 3. FINANZAS (NUEVA SECCIÓN)
+# ==========================================
+elif menu == "💰 Finanzas":
+    st.title("Flujo de Caja y Finanzas")
+    df_fin = cargar_tabla("finanzas")
+    
+    if not df_fin.empty:
+        mes_actual = ahora().strftime("%Y-%m")
+        df_mes = df_fin[df_fin['fecha'].str.startswith(mes_actual)]
+        
+        ingresos = df_mes[df_mes['tipo'] == "Ingreso"]['monto'].sum()
+        egresos = df_mes[df_mes['tipo'] == "Egreso"]['monto'].sum()
+        utilidad = ingresos - egresos
+        
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Ingresos (Mes)", dinero(ingresos))
+        c2.metric("Gastos Insumos (Mes)", dinero(egresos))
+        c3.metric("UTILIDAD NETA (Mes)", dinero(utilidad))
+        
+        st.markdown("---")
+        st.subheader("Historial de Movimientos")
+        
+        # Invertimos el orden para ver lo más nuevo hasta arriba
+        df_mostrar = df_fin.sort_values(by="fecha", ascending=False).copy()
+        
+        # Damos formato de dinero a la columna de monto para que se vea mejor
+        df_mostrar['monto'] = df_mostrar['monto'].apply(dinero)
+        mostrar_df(df_mostrar[['fecha', 'tipo', 'monto', 'descripcion']], hide_index=True)
+    else:
+        st.info("Aún no hay movimientos financieros registrados.")
+
+# ==========================================
+# 4. LISTA DE COMPRAS
 # ==========================================
 elif menu == "🛒 Lista de Compras":
     st.title("Lista de Compras")
@@ -414,13 +470,13 @@ elif menu == "🛒 Lista de Compras":
     if not df_insumos.empty:
         faltantes = df_insumos[df_insumos['stock'] <= df_insumos['stock_minimo']].copy()
         if faltantes.empty:
-            st.success("✔️ ¡Inventario completo!")
+            st.success("✔️️ ¡Inventario completo!")
         else:
             faltantes['sugerido'] = (faltantes['stock_minimo'] - faltantes['stock']).clip(lower=1)
             mostrar_df(faltantes[['nombre', 'stock', 'stock_minimo', 'sugerido', 'unidad']], hide_index=True)
 
 # ==========================================
-# 4. MERMAS
+# 5. MERMAS
 # ==========================================
 elif menu == "🗑️ Mermas":
     st.title("Registro de Mermas")
@@ -442,7 +498,7 @@ elif menu == "🗑️ Mermas":
                 st.rerun()
 
 # ==========================================
-# 5. AJUSTES Y RESPALDOS
+# 6. AJUSTES Y RESPALDOS
 # ==========================================
 elif menu == "⚙️ Ajustes y Respaldos":
     st.title("Ajustes del Sistema")
