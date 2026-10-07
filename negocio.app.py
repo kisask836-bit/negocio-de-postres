@@ -13,6 +13,7 @@ Cómo se protegen los datos
   petición atómica: o se guarda todo o no se guarda nada.
 * Antes de guardar se vuelven a leer los datos frescos de Google, así que no se pisan los
   cambios que hiciste a mano en la hoja, y solo se escriben las celdas que cambian.
+* Una receta indica cuántas piezas rinde cada tanda; el costo por pieza sale de ahí.
 * Cada acción lleva un código único: si reintentas o tocas dos veces, la app detecta que ya
   quedó guardada y no la duplica.
 """
@@ -105,7 +106,8 @@ def _py(v):
 ESQUEMA = {
     "insumos": {"nombre": "t", "categoria": "t", "unidad": "t", "costo_unidad": "n",
                 "stock": "n", "stock_minimo": "n"},
-    "recetas": {"id": "i", "nombre": "t", "categoria": "t", "precio_venta": "n", "vida_util_dias": "n"},
+    "recetas": {"id": "i", "nombre": "t", "categoria": "t", "precio_venta": "n", "vida_util_dias": "n",
+                "rinde": "n"},
     "receta_ingredientes": {"receta_id": "i", "insumo_nombre": "t", "cantidad": "n"},
     "tandas": {"id": "i", "receta_nombre": "t", "cantidad_producida": "n", "stock_disponible": "n",
                "costo_total": "n", "fecha": "t", "notas": "t", "caduca": "t", "ref": "t"},
@@ -167,6 +169,15 @@ def conversiones(unidad):
         if abs(factor - 1.0) > 1e-9:
             res.append((etiqueta, factor))
     return res
+
+
+def rinde_de(x):
+    """Piezas que rinde una tanda. Las recetas viejas (sin dato) cuentan como 1."""
+    try:
+        v = int(round(float(x)))
+    except Exception:
+        return 1
+    return v if v >= 1 else 1
 
 
 def precio_sugerido(costo, margen_pct):
@@ -477,16 +488,23 @@ def b_producir(receta, n, notas):
                      que=f"«{i['insumo_nombre']}»")
         vida = float(rec["vida_util_dias"])
         caduca = (ahora() + timedelta(days=vida)).strftime("%Y-%m-%d") if vida > 0 else ""
-        tid = op.agregar("tandas", receta_nombre=receta, cantidad_producida=n, stock_disponible=n,
+        piezas = n * rinde_de(rec["rinde"])
+        tid = op.agregar("tandas", receta_nombre=receta, cantidad_producida=piezas, stock_disponible=piezas,
                          costo_total=r2(costo), fecha=ahora().strftime("%Y-%m-%d %H:%M"),
                          notas=notas, caduca=caduca)
-        op.mensaje = f"✅ Lote #{tid} registrado ({n} × {receta}) e insumos descontados."
+        op.mensaje = (f"✅ Lote #{tid}: {n} tanda(s) = {piezas} × {receta}. "
+                      f"Costo real por pieza: {dinero(costo / piezas)}.")
     return f
 
 
-def b_corregir_lote(tid, disp, notas, costo):
+def b_corregir_lote(tid, producidas, disp, notas, costo):
     def f(op):
-        op.fijar("tandas", "id", tid, {"stock_disponible": r4(disp), "notas": notas, "costo_total": r2(costo)}, "El lote")
+        if producidas < 1:
+            raise Fallo("Las piezas producidas deben ser al menos 1.")
+        if disp > producidas + 1e-9:
+            raise Fallo("No puede haber más piezas disponibles que producidas.")
+        op.fijar("tandas", "id", tid, {"cantidad_producida": r4(producidas), "stock_disponible": r4(disp),
+                                       "notas": notas, "costo_total": r2(costo)}, "El lote")
         op.mensaje = "✅ Lote actualizado."
     return f
 
@@ -567,26 +585,27 @@ def b_borrar_insumo(nombre):
     return f
 
 
-def b_crear_receta(nombre, cat, precio, vida, ingredientes):
+def b_crear_receta(nombre, cat, precio, vida, rinde, ingredientes):
     def f(op):
         if op.T["recetas"]["nombre"].str.lower().eq(nombre.lower()).any():
             raise Fallo("Ya existe una receta con ese nombre.")
         for ins, _ in ingredientes:
             op.requerir("insumos", "nombre", ins, f"El insumo «{ins}»")
-        rid = op.agregar("recetas", nombre=nombre, categoria=cat, precio_venta=r2(precio), vida_util_dias=vida)
+        rid = op.agregar("recetas", nombre=nombre, categoria=cat, precio_venta=r2(precio), vida_util_dias=vida,
+                         rinde=rinde_de(rinde))
         for ins, c in ingredientes:
             op.agregar("receta_ingredientes", receta_id=rid, insumo_nombre=ins, cantidad=r4(c))
         op.mensaje = f"✅ Receta «{nombre}» guardada."
     return f
 
 
-def b_editar_receta(rid, nombre, cat, precio, vida):
+def b_editar_receta(rid, nombre, cat, precio, vida, rinde):
     def f(op):
         r = op.requerir("recetas", "id", rid, "La receta")
         if nombre.lower() != r["nombre"].lower() and op.T["recetas"]["nombre"].str.lower().eq(nombre.lower()).any():
             raise Fallo("Ya existe otra receta con ese nombre.")
         op.fijar("recetas", "id", rid, {"nombre": nombre, "categoria": cat, "precio_venta": r2(precio),
-                                        "vida_util_dias": vida})
+                                        "vida_util_dias": vida, "rinde": rinde_de(rinde)})
         if nombre != r["nombre"]:
             op.fijar_donde("tandas", "receta_nombre", r["nombre"], {"receta_nombre": nombre})
             op.fijar_donde("ventas", "producto", r["nombre"], {"producto": nombre})
@@ -1132,6 +1151,8 @@ def pagina_producir(D):
         n = c1.number_input("Tandas", min_value=1, step=1, value=1, key=f"p_n_{v}")
         notas = c2.text_input("Notas (opcional)", key=f"p_notas_{v}", placeholder="Ej. horneado en la mañana")
         r = rec[rec["nombre"] == receta].iloc[0]
+        rinde = rinde_de(r["rinde"])
+        piezas = int(n) * rinde
         ing = ri[ri["receta_id"] == int(r["id"])]
         filas, ok, costo, faltan = [], not ing.empty, 0.0, []
         for _, i in ing.iterrows():
@@ -1155,7 +1176,10 @@ def pagina_producir(D):
         else:
             mostrar_df(pd.DataFrame(filas), hide_index=True)
             if ok:
-                st.info(f"💰 Costo: **{dinero(costo)}** ({dinero(costo / n)} por tanda)")
+                st.info(f"Obtendrás **{piezas} piezas** ({rinde} por tanda)\n\n"
+                        f"💰 Costo total **{dinero(costo)}** · **{dinero(costo / piezas)} por pieza**")
+                if rinde == 1:
+                    st.caption("Esta receta rinde 1 pieza por tanda. Si rinde más, cámbialo en 📖 Recetas → Editar.")
             else:
                 st.error("Te falta: " + ", ".join(faltan))
         if st.button("🍳 Producir", type="primary", disabled=not ok, key="btn_producir", **_ANCHO):
@@ -1168,6 +1192,8 @@ def pagina_producir(D):
     else:
         vista = pd.DataFrame({"Lote": act["id"], "Producto": act["receta_nombre"],
                               "Disp.": act["stock_disponible"].map(cant),
+                              "$/pieza": [dinero(c / p) if p > 0 else "—" for c, p in
+                                          zip(act["costo_total"], act["cantidad_producida"])],
                               "Caduca": act["caduca"].str[:10]})
         mostrar_df(vista, hide_index=True)
 
@@ -1178,13 +1204,17 @@ def pagina_producir(D):
             tid = st.selectbox("Lote", list(etiq), format_func=lambda x: etiq[x], key="lote_sel")
             fl = tan[tan["id"] == tid].iloc[0]
             vv = ver(f"lote_{tid}")
+            prod_l = st.number_input("Piezas producidas en total", min_value=1.0,
+                                     value=max(float(fl["cantidad_producida"]), 1.0), step=1.0,
+                                     key=f"lt_p_{tid}_{vv}",
+                                     help="Corrígelo si este lote se registró antes de indicar cuánto rinde la receta.")
             disp = st.number_input("Piezas disponibles", min_value=0.0, value=float(fl["stock_disponible"]),
                                    step=1.0, key=f"lt_d_{tid}_{vv}")
             notas_l = st.text_input("Notas", value=str(fl["notas"]), key=f"lt_n_{tid}_{vv}")
             costo_l = st.number_input("Costo total del lote ($)", min_value=0.0, value=float(fl["costo_total"]),
                                       format="%.2f", key=f"lt_c_{tid}_{vv}")
             if st.button("💾 Guardar cambios", type="primary", key=f"lt_g_{tid}", **_ANCHO):
-                intentar(f"lote_{tid}", b_corregir_lote(int(tid), disp, notas_l.strip(), costo_l))
+                intentar(f"lote_{tid}", b_corregir_lote(int(tid), prod_l, disp, notas_l.strip(), costo_l))
             devolver = st.checkbox("Al borrar, devolver los insumos al inventario (solo si se registró por error)",
                                    key=f"lt_dev_{tid}")
             if doble_toque(f"borrar_lote_{tid}", "🗑️ Borrar lote", "¿Borrar este lote?", "Sí, borrar"):
@@ -1312,7 +1342,9 @@ def pagina_recetas(D):
         st.info("Aún no hay recetas. Crea la primera abajo.")
     for r in rec.itertuples():
         costo, faltan = costo_receta(r.id, ri, ins)
-        with st.expander(f"🍰 {r.nombre} · {dinero(r.precio_venta)}"):
+        rinde = rinde_de(r.rinde)
+        costo_pz = costo / rinde
+        with st.expander(f"🍰 {r.nombre} · {dinero(r.precio_venta)} c/u"):
             filas = []
             for _, i in ri[ri["receta_id"] == r.id].iterrows():
                 d = ins[ins["nombre"] == i["insumo_nombre"]]
@@ -1326,12 +1358,13 @@ def pagina_recetas(D):
                 st.caption("Sin ingredientes todavía.")
             if faltan:
                 st.warning("Ya no existen en el inventario: " + ", ".join(faltan))
-            gan = r.precio_venta - costo
+            gan = r.precio_venta - costo_pz
             pct = (gan / r.precio_venta * 100) if r.precio_venta > 0 else 0
-            st.markdown(f"Costo **{dinero(costo)}** · Ganancia **{dinero(gan)}** ({pct:.0f}%)"
-                        + (f" · Dura **{cant(r.vida_util_dias)}** días" if r.vida_util_dias > 0 else ""))
-            if costo > 0:
-                sug = precio_sugerido(costo, margen)
+            st.markdown(f"Una tanda cuesta **{dinero(costo)}** y rinde **{rinde}** piezas\n\n"
+                        f"Costo por pieza **{dinero(costo_pz)}** · Ganancia por pieza **{dinero(gan)}** ({pct:.0f}%)"
+                        + (f"\n\nDura **{cant(r.vida_util_dias)}** días" if r.vida_util_dias > 0 else ""))
+            if costo_pz > 0:
+                sug = precio_sugerido(costo_pz, margen)
                 if abs(sug - r.precio_venta) > 0.5:
                     st.caption(f"💡 Para ganar {margen}% el precio sería **{dinero(sug)}**.")
                     if st.button(f"Usar {dinero(sug)}", key=f"usar_precio_{r.id}"):
@@ -1342,22 +1375,27 @@ def pagina_recetas(D):
     vr = ver("receta")
     with st.expander("🆕 Nueva receta"):
         nom = st.text_input("Nombre de la receta", key=f"r_nom_{vr}").strip()
-        c1, c2, c3 = st.columns(3)
+        c1, c2 = st.columns(2)
         cat = c1.text_input("Categoría", value="PAYS", key=f"r_cat_{vr}").strip().upper()
-        precio = c2.number_input("Precio ($)", min_value=0.0, format="%.2f", key=f"r_pre_{vr}")
-        vida = c3.number_input("Dura (días)", min_value=0, step=1, value=0, key=f"r_vid_{vr}",
+        rinde_n = c2.number_input("Una tanda rinde (piezas)", min_value=1, step=1, value=1, key=f"r_rin_{vr}",
+                                  help="Cuántos pays salen de una tanda. Ej. 20")
+        c3, c4 = st.columns(2)
+        precio = c3.number_input("Precio por pieza ($)", min_value=0.0, format="%.2f", key=f"r_pre_{vr}")
+        vida = c4.number_input("Dura (días)", min_value=0, step=1, value=0, key=f"r_vid_{vr}",
                                help="0 = no avisar caducidad")
         ingr, costo_prev = editor_ingredientes(f"ing_nueva_{vr}", D)
         if ingr:
-            st.info(f"Costo estimado **{dinero(costo_prev)}** · Ganancia **{dinero(precio - costo_prev)}**"
-                    + (f" · Precio sugerido **{dinero(precio_sugerido(costo_prev, margen))}**" if costo_prev > 0 else ""))
+            cpz = costo_prev / int(rinde_n)
+            st.info(f"Una tanda cuesta **{dinero(costo_prev)}** → **{dinero(cpz)} por pieza**\n\n"
+                    f"Ganancia por pieza **{dinero(precio - cpz)}**"
+                    + (f" · Precio sugerido **{dinero(precio_sugerido(cpz, margen))}**" if cpz > 0 else ""))
         if st.button("💾 Guardar receta", type="primary", key="btn_save_rec", **_ANCHO):
             if not nom:
                 st.error("Escribe el nombre de la receta.")
             elif not ingr:
                 st.error("Agrega al menos un ingrediente.")
             else:
-                intentar("receta", b_crear_receta(nom, cat, precio, int(vida), ingr))
+                intentar("receta", b_crear_receta(nom, cat, precio, int(vida), int(rinde_n), ingr))
 
     if not rec.empty:
         with st.expander("✏️ Editar o eliminar receta"):
@@ -1366,17 +1404,20 @@ def pagina_recetas(D):
             fr = rec[rec["id"] == rid].iloc[0]
             k = f"{rid}_{ver(f'editrec_{rid}')}"
             e_nom = st.text_input("Nombre", value=str(fr["nombre"]), key=f"er_nom_{k}").strip()
-            c1, c2, c3 = st.columns(3)
+            c1, c2 = st.columns(2)
             e_cat = c1.text_input("Categoría", value=str(fr["categoria"]), key=f"er_cat_{k}").strip().upper()
-            e_pre = c2.number_input("Precio ($)", min_value=0.0, value=float(fr["precio_venta"]),
+            e_rin = c2.number_input("Una tanda rinde (piezas)", min_value=1, step=1, value=rinde_de(fr["rinde"]),
+                                    key=f"er_rin_{k}", help="Aplica a las tandas que produzcas desde ahora.")
+            c3, c4 = st.columns(2)
+            e_pre = c3.number_input("Precio por pieza ($)", min_value=0.0, value=float(fr["precio_venta"]),
                                     format="%.2f", key=f"er_pre_{k}")
-            e_vid = c3.number_input("Dura (días)", min_value=0, step=1, value=int(fr["vida_util_dias"]),
+            e_vid = c4.number_input("Dura (días)", min_value=0, step=1, value=int(fr["vida_util_dias"]),
                                     key=f"er_vid_{k}")
             if st.button("💾 Guardar datos", type="primary", key=f"er_g_{rid}", **_ANCHO):
                 if not e_nom:
                     st.error("El nombre no puede estar vacío.")
                 else:
-                    intentar(f"editrec_{rid}", b_editar_receta(int(rid), e_nom, e_cat, e_pre, int(e_vid)))
+                    intentar(f"editrec_{rid}", b_editar_receta(int(rid), e_nom, e_cat, e_pre, int(e_vid), int(e_rin)))
             st.markdown("**Ingredientes**")
             actuales = [(i["insumo_nombre"], float(i["cantidad"]))
                         for _, i in ri[ri["receta_id"] == rid].iterrows()]
